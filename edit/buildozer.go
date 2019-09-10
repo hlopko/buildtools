@@ -587,8 +587,90 @@ func copyAttributeBetweenRules(env CmdEnvironment, attrName string, from string)
 	if err != nil {
 		return nil, fmt.Errorf("could not parse attribute value %v", build.FormatString(attr))
 	}
+  fmt.Fprintf(os.Stderr, "Magic happens, watch out\n")
 
-	env.Rule.SetAttr(attrName, ast.Stmt[0])
+	attr = env.Rule.Attr(attrName)
+	if attr == nil {
+		return nil, fmt.Errorf("rule does not have attribute '%s'", attrName)
+	}
+
+  fromVal := ast.Stmt[0]
+  toVal := env.Rule.Attr(attrName)
+  idents := make (map[string]bool)
+  extraIdents := make (map[string]bool)
+  seen := make (map[string]bool)
+  extraSeen := make (map[string]bool)
+  var lastListExpr *build.ListExpr
+  var giveUp bool
+
+	build.WalkPointers(fromVal, func(e *build.Expr, stack []build.Expr) {
+    switch expr := (*e).(type) {
+    case *build.StringExpr:
+      seen[expr.Value] = true
+    case *build.ListExpr:
+      lastListExpr = expr
+    case *build.Ident:
+      idents[expr.Name] = true
+    case *build.BinaryExpr:
+    default:
+      giveUp = true
+    }
+  })
+
+  var extraExprs []build.Expr
+	build.WalkPointers(toVal, func(e *build.Expr, stack []build.Expr) {
+		switch expr := (*e).(type) {
+		case *build.StringExpr:
+      if !seen[expr.Value] && !strings.HasPrefix(expr.Value, "//visibility:") {
+        extraExprs = append(extraExprs, expr)
+      }
+      extraSeen[expr.Value] = true
+    case *build.Ident:
+      extraIdents[expr.Name] = true
+    case *build.ListExpr:
+    case *build.BinaryExpr:
+    default:
+      giveUp = true
+    }
+	})
+
+  if seen["//visibility:public"] {
+    env.Rule.SetAttr(attrName, fromVal)
+    return env.File, nil
+  }
+
+  if seen["//visibility:private"] {
+    return env.File, nil
+  }
+
+  if extraSeen["//visibility:public"] {
+    return env.File, nil
+  }
+
+  if extraSeen["//visibility:private"] {
+    env.Rule.SetAttr(attrName, fromVal)
+    return env.File, nil
+  }
+
+  if giveUp {
+      return nil, fmt.Errorf("Visibility is too complicated, I give up.")
+  }
+
+  for ident, _ := range extraIdents {
+    if !idents[ident] {
+      return nil, fmt.Errorf("used identifiers differ, I give up.")
+    }
+  }
+
+  fmt.Fprintf(os.Stderr, "Magic happens, watch out\n")
+  if lastListExpr != nil {
+    lastListExpr.List = append(lastListExpr.List, extraExprs...)
+  } else {
+    lastListExpr := &build.ListExpr{List: extraExprs}
+    fromVal = &build.AssignExpr{LHS: fromVal, Op: "+", RHS: lastListExpr}
+  }
+	env.Rule.SetAttr(attrName, fromVal)
+	ResolveAttr(env.Rule, attrName, env.Pkg)
 	return env.File, nil
 }
 

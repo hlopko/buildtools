@@ -30,306 +30,425 @@ die () {
 
 [[ "$1" =~ external/* ]] && buildifier="${{1#external/}}" || buildifier="$TEST_WORKSPACE/$1"
 [[ "$2" =~ external/* ]] && buildifier2="${{2#external/}}" || buildifier2="$TEST_WORKSPACE/$2"
+[[ "$3" =~ external/* ]] && buildozer="${{3#external/}}" || buildozer="$TEST_WORKSPACE/$3"
 buildifier="$(rlocation "$buildifier")"
 buildifier2="$(rlocation "$buildifier2")"
+buildozer="$(rlocation "$buildozer")"
 
-mkdir -p test_dir/subdir
-mkdir -p golden
-INPUT="load(':foo.bzl', 'foo'); foo(tags=['b', 'a'],srcs=['d', 'c'])"  # formatted differently in build and bzl modes
-echo -e "$INPUT" > test_dir/BUILD
-echo -e "$INPUT" > test_dir/test.bzl
-echo -e "$INPUT" > test_dir/subdir/test.bzl
-echo -e "$INPUT" > test_dir/subdir/build  # lowercase, should be ignored by -r
-echo -e "$INPUT" > test.bzl  # outside the test_dir directory
-echo -e "$INPUT" > test2.bzl  # outside the test_dir directory
-echo -e "not valid +" > test_dir/foo.bar
-mkdir test_dir/workspace  # name of a starlark file, but a directory
-mkdir test_dir/.git  # contents should be ignored
-echo -e "a+b" > test_dir/.git/git.bzl
+function assert_equal_files() {
+  if ! diff $1 $2 > /dev/null;
+  then
+    echo "## Comparing $1 and $2: Assertion failed, files are not equal"
+    echo "## First:"
+    cat $1
+    echo "## Second:"
+    cat $2
+    echo "## Diff:"
+    diff $1 $2
+  fi
+}
 
-cp test_dir/foo.bar golden/foo.bar
-cp test_dir/subdir/build golden/build
-cp test_dir/.git/git.bzl golden/git.bzl
+touch WORKSPACE
 
-"$buildifier" < test_dir/BUILD > stdout
-"$buildifier" -r test_dir
-"$buildifier" test.bzl
-"$buildifier" --path=foo.bzl test2.bzl
-"$buildifier2" test_dir/test.bzl > test_dir/test.bzl.out
+# Public visibility on original always wins
+mkdir -p public
+cat > public/BUILD <<EOF
+filegroup(
+    name = "original",
+    visibility = ["//visibility:public"],
+)
 
-cat > golden/BUILD.golden <<EOF
-load(":foo.bzl", "foo")
+filegroup(
+    name = "copy",
+    visibility = ["//visibility:private"],
+)
+EOF
 
-foo(
-    srcs = [
-        "c",
-        "d",
-    ],
-    tags = [
-        "a",
-        "b",
+cat > public/BUILD.expected <<EOF
+filegroup(
+    name = "original",
+    visibility = ["//visibility:public"],
+)
+
+filegroup(
+    name = "copy",
+    visibility = ["//visibility:public"],
+)
+EOF
+
+$buildozer 'copy visibility original' //public:copy
+assert_equal_files public/BUILD public/BUILD.expected
+
+# Private visibility on original is noop
+mkdir -p private
+cat > private/BUILD <<EOF
+filegroup(
+    name = "original",
+    visibility = ["//visibility:private"],
+)
+
+filegroup(
+    name = "copy",
+    visibility = ["//visibility:yolo"],
+)
+EOF
+
+cat > private/BUILD.expected <<EOF
+filegroup(
+    name = "original",
+    visibility = ["//visibility:private"],
+)
+
+filegroup(
+    name = "copy",
+    visibility = ["//visibility:yolo"],
+)
+EOF
+
+$buildozer 'copy visibility original' //private:copy || [[ $? -eq 3 ]]
+assert_equal_files private/BUILD private/BUILD.expected
+
+# Public visibility on copy is noop
+mkdir -p public_copy
+cat > public_copy/BUILD <<EOF
+filegroup(
+    name = "original",
+    visibility = ["//visibility:private"],
+)
+
+filegroup(
+    name = "copy",
+    visibility = ["//visibility:public"],
+)
+EOF
+
+cat > public_copy/BUILD.expected <<EOF
+filegroup(
+    name = "original",
+    visibility = ["//visibility:private"],
+)
+
+filegroup(
+    name = "copy",
+    visibility = ["//visibility:public"],
+)
+EOF
+
+$buildozer 'copy visibility original' //public_copy:copy || [[ $? -eq 3 ]]
+assert_equal_files public_copy/BUILD public_copy/BUILD.expected
+
+# Private visibility on copy - we take original
+mkdir -p private_copy
+cat > private_copy/BUILD <<EOF
+filegroup(
+    name = "original",
+    visibility = ["//visibility:yolo"],
+)
+
+filegroup(
+    name = "copy",
+    visibility = ["//visibility:private"],
+)
+EOF
+
+cat > private_copy/BUILD.expected <<EOF
+filegroup(
+    name = "original",
+    visibility = ["//visibility:yolo"],
+)
+
+filegroup(
+    name = "copy",
+    visibility = ["//visibility:yolo"],
+)
+EOF
+
+$buildozer 'copy visibility original' //private_copy:copy || [[ $? -eq 3 ]]
+assert_equal_files private_copy/BUILD private_copy/BUILD.expected
+
+# copy retains its own custom labels
+mkdir -p custom_copy
+cat > custom_copy/BUILD <<EOF
+filegroup(
+    name = "original",
+    visibility = ["//bubu:bar"],
+)
+
+filegroup(
+    name = "copy",
+    visibility = ["//yolo:a"],
+)
+EOF
+
+cat > custom_copy/BUILD.expected <<EOF
+filegroup(
+    name = "original",
+    visibility = ["//bubu:bar"],
+)
+
+filegroup(
+    name = "copy",
+    visibility = [
+        "//bubu:bar",
+        "//yolo:a",
     ],
 )
 EOF
-cat > golden/test.bzl.golden <<EOF
-load(":foo.bzl", "foo")
 
-foo(tags = ["b", "a"], srcs = ["d", "c"])
+$buildozer 'copy visibility original' //custom_copy:copy || [[ $? -eq 3 ]]
+assert_equal_files custom_copy/BUILD custom_copy/BUILD.expected
+
+# copy retains its own custom labels, no duplicates
+mkdir -p custom_nodups
+cat > custom_nodups/BUILD <<EOF
+filegroup(
+    name = "original",
+    visibility = [
+        "//bubu:bar",
+        "//bubu:baz",
+    ],
+)
+
+filegroup(
+    name = "copy",
+    visibility = ["//yolo:a", "//bubu:baz"],
+)
 EOF
 
-diff test_dir/BUILD golden/BUILD.golden
-diff test_dir/test.bzl golden/test.bzl.golden
-diff test_dir/subdir/test.bzl golden/test.bzl.golden
-diff test_dir/subdir/build golden/build
-diff test_dir/foo.bar golden/foo.bar
-diff test.bzl golden/test.bzl.golden
-diff test2.bzl golden/test.bzl.golden
-diff stdout golden/test.bzl.golden
-diff test_dir/test.bzl.out golden/test.bzl.golden
-diff test_dir/.git/git.bzl golden/git.bzl
+cat > custom_nodups/BUILD.expected <<EOF
+filegroup(
+    name = "original",
+    visibility = [
+        "//bubu:bar",
+        "//bubu:baz",
+    ],
+)
 
-# Test run on a directory without -r
-"$buildifier" test_dir || ret=$?
-if [[ $ret -ne 3 ]]; then
-  die "Directory without -r: expected buildifier to exit with 3, actual: $ret"
-fi
-
-# Test the linter
-
-cat > test_dir/to_fix.bzl <<EOF
-a = b / c
-d = {"b": 2, "a": 1}
-attr.foo(bar, cfg = "data")
+filegroup(
+    name = "copy",
+    visibility = [
+        "//bubu:bar",
+        "//bubu:baz",
+        "//yolo:a",
+    ],
+)
 EOF
 
-cat > test_dir/fixed_golden.bzl <<EOF
-a = b // c
-d = {"b": 2, "a": 1}
-attr.foo(bar)
+$buildozer 'copy visibility original' //custom_nodups:copy || [[ $? -eq 3 ]]
+assert_equal_files custom_nodups/BUILD custom_nodups/BUILD.expected
+
+# copy retains its own custom labels, no duplicates
+mkdir -p custom_nodups
+cat > custom_nodups/BUILD <<EOF
+filegroup(
+    name = "original",
+    visibility = [
+        "//bubu:bar",
+        "//bubu:baz",
+    ],
+)
+
+filegroup(
+    name = "copy",
+    visibility = ["//yolo:a", "//bubu:baz"],
+)
 EOF
 
-cat > test_dir/fixed_golden_all.bzl <<EOF
-a = b // c
-d = {"a": 1, "b": 2}
-attr.foo(bar)
+cat > custom_nodups/BUILD.expected <<EOF
+filegroup(
+    name = "original",
+    visibility = [
+        "//bubu:bar",
+        "//bubu:baz",
+    ],
+)
+
+filegroup(
+    name = "copy",
+    visibility = [
+        "//bubu:bar",
+        "//bubu:baz",
+        "//yolo:a",
+    ],
+)
 EOF
 
-cat > test_dir/fixed_golden_dict_cfg.bzl <<EOF
-a = b / c
-d = {"a": 1, "b": 2}
-attr.foo(bar)
+$buildozer 'copy visibility original' //custom_nodups:copy || [[ $? -eq 3 ]]
+assert_equal_files custom_nodups/BUILD custom_nodups/BUILD.expected
+
+# copy retains its own custom labels, creates list if needed
+mkdir -p missing_list
+cat > missing_list/BUILD <<EOF
+filegroup(
+    name = "original",
+    visibility = visibilities,
+)
+
+filegroup(
+    name = "copy",
+    visibility = ["//yolo:a", "//bubu:baz"],
+)
 EOF
 
-cat > test_dir/fixed_golden_cfg.bzl <<EOF
-a = b / c
-d = {"b": 2, "a": 1}
-attr.foo(bar)
+cat > missing_list/BUILD.expected <<EOF
+filegroup(
+    name = "original",
+    visibility = visibilities,
+)
+
+filegroup(
+    name = "copy",
+    visibility = (visibilities + [
+        "//yolo:a",
+        "//bubu:baz",
+    ]),
+)
 EOF
 
-cat > test_dir/fix_report_golden <<EOF
-test_dir/to_fix_tmp.bzl: applied fixes, 1 warnings left
-fixed test_dir/to_fix_tmp.bzl
+$buildozer 'copy visibility original' //missing_list:copy || [[ $? -eq 3 ]]
+assert_equal_files missing_list/BUILD missing_list/BUILD.expected
+
+
+# differring variables - bail out
+mkdir -p diffing_variables
+cat > diffing_variables/BUILD <<EOF
+filegroup(
+    name = "original",
+    visibility = visibilities,
+)
+
+filegroup(
+    name = "copy",
+    visibility = other_stuff,
+)
 EOF
 
-error_docstring="test_dir/to_fix_tmp.bzl:1: module-docstring: The file has no module docstring."$'\n'"A module docstring is a string literal (not a comment) which should be the first statement of a file (it may follow comment lines). (https://github.com/bazelbuild/buildtools/blob/master/WARNINGS.md#module-docstring)"
-error_integer="test_dir/to_fix_tmp.bzl:1: integer-division: The \"/\" operator for integer division is deprecated in favor of \"//\". (https://github.com/bazelbuild/buildtools/blob/master/WARNINGS.md#integer-division)"
-error_dict="test_dir/to_fix_tmp.bzl:2: unsorted-dict-items: Dictionary items are out of their lexicographical order. (https://github.com/bazelbuild/buildtools/blob/master/WARNINGS.md#unsorted-dict-items)"
-error_cfg="test_dir/to_fix_tmp.bzl:3: attr-cfg: cfg = \"data\" for attr definitions has no effect and should be removed. (https://github.com/bazelbuild/buildtools/blob/master/WARNINGS.md#attr-cfg)"
+cat > diffing_variables/BUILD.expected <<EOF
+filegroup(
+    name = "original",
+    visibility = visibilities,
+)
 
-test_lint () {
-  ret=0
-  cp test_dir/to_fix.bzl test_dir/to_fix_tmp.bzl
-  echo "$4" > golden/error_golden
-  echo "${4//test_dir\/to_fix_tmp.bzl/foo.bzl}" > golden/error_golden_foo
-
-  cat > golden/fix_report_golden <<EOF
-test_dir/to_fix_tmp.bzl: applied fixes, $5 warnings left
-fixed test_dir/to_fix_tmp.bzl
+filegroup(
+    name = "copy",
+    visibility = other_stuff,
+)
 EOF
 
-  # --lint=warn with --mode=check
-  $buildifier --mode=check --lint=warn $2 test_dir/to_fix_tmp.bzl 2> test_dir/error || ret=$?
-  if [[ $ret -ne 4 ]]; then
-    die "$1: warn: Expected buildifier to exit with 4, actual: $ret"
-  fi
-  diff test_dir/error golden/error_golden || die "$1: wrong console output for --mode=check --lint=warn"
-  diff test_dir/to_fix.bzl test_dir/to_fix.bzl || die "$1: --mode=check --lint=warn shouldn't modify files"
+$buildozer 'copy visibility original' //diffing_variables:copy || [[ $? -eq 2 ]]
+assert_equal_files diffing_variables/BUILD diffing_variables/BUILD.expected
 
-  # --lint=warn
-  $buildifier --lint=warn $2 test_dir/to_fix_tmp.bzl 2> test_dir/error || ret=$?
-  if [[ $ret -ne 4 ]]; then
-    die "$1: warn: Expected buildifier to exit with 4, actual: $ret"
-  fi
-  diff test_dir/error golden/error_golden || die "$1: wrong console output for --lint=warn"
+# variables are taken from original
+mkdir -p original_variables
+cat > original_variables/BUILD <<EOF
+filegroup(
+    name = "original",
+    visibility = visibilities,
+)
 
-  # --lint=warn with --path
-  $buildifier --lint=warn --path=foo.bzl $2 test_dir/to_fix_tmp.bzl 2> test_dir/error || ret=$?
-  if [[ $ret -ne 4 ]]; then
-    die "$1: warn: Expected buildifier to exit with 4, actual: $ret"
-  fi
-  diff test_dir/error golden/error_golden_foo || die "$1: wrong console output for --lint=warn and --path"
-
-  # --lint=fix
-  $buildifier --lint=fix $2 -v test_dir/to_fix_tmp.bzl 2> test_dir/fix_report || ret=$?
-  if [[ $ret -ne 4 ]]; then
-    die "$1: fix: Expected buildifier to exit with 4, actual: $ret"
-  fi
-  diff test_dir/to_fix_tmp.bzl $3 || die "$1: wrong file output for --lint=fix"
-  diff test_dir/fix_report golden/fix_report_golden || die "$1: wrong console output for --lint=fix"
-}
-
-test_lint "default" "" "test_dir/fixed_golden.bzl" "$error_integer"$'\n'"$error_docstring"$'\n'"$error_cfg" 1
-test_lint "all" "--warnings=all" "test_dir/fixed_golden_all.bzl" "$error_integer"$'\n'"$error_docstring"$'\n'"$error_dict"$'\n'"$error_cfg" 1
-test_lint "cfg" "--warnings=attr-cfg" "test_dir/fixed_golden_cfg.bzl" "$error_cfg" 0
-test_lint "custom" "--warnings=-integer-division,+unsorted-dict-items" "test_dir/fixed_golden_dict_cfg.bzl" "$error_docstring"$'\n'"$error_dict"$'\n'"$error_cfg" 1
-
-# Test --format=json
-
-mkdir test_dir/json
-cp test_dir/to_fix.bzl test_dir/json
-
-# just not formatted
-cat > test_dir/json/to_fix_2.bzl <<EOF
-a=b
+filegroup(
+    name = "copy",
+    visibility = ["//yolo:a", "//bubu:baz"],
+)
 EOF
 
-# not formatted with rewrites
-cat > test_dir/json/to_fix_3.bzl <<EOF
-x = 0123
+cat > original_variables/BUILD.expected <<EOF
+filegroup(
+    name = "original",
+    visibility = visibilities,
+)
+
+filegroup(
+    name = "copy",
+    visibility = (visibilities + [
+        "//yolo:a",
+        "//bubu:baz",
+    ]),
+)
 EOF
 
-# formatted, no warnings
-cat > test_dir/json/to_fix_4.bzl <<EOF
-a = b
+$buildozer 'copy visibility original' //original_variables:copy || [[ $? -eq 3 ]]
+assert_equal_files original_variables/BUILD original_variables/BUILD.expected
+
+# we bail out on function calls
+mkdir -p funcalls
+cat > funcalls/BUILD <<EOF
+filegroup(
+    name = "original",
+    visibility = visibilities(),
+)
+
+filegroup(
+    name = "copy",
+    visibility = ["//yolo:a", "//bubu:baz"],
+)
 EOF
 
-# not a starlark file
-cat > test_dir/json/foo.bar <<EOF
-this is not a starlark file
+cat > funcalls/BUILD.expected <<EOF
+filegroup(
+    name = "original",
+    visibility = visibilities(),
+)
+
+filegroup(
+    name = "copy",
+    visibility = ["//yolo:a", "//bubu:baz"],
+)
 EOF
 
-cat > golden/json_report_golden <<EOF
-{
-    "success": false,
-    "files": [
-        {
-            "filename": "to_fix.bzl",
-            "formatted": true,
-            "valid": true,
-            "warnings": [
-                {
-                    "start": {
-                        "line": 1,
-                        "column": 5
-                    },
-                    "end": {
-                        "line": 1,
-                        "column": 10
-                    },
-                    "category": "integer-division",
-                    "actionable": true,
-                    "message": "The \"/\" operator for integer division is deprecated in favor of \"//\".",
-                    "url": "https://github.com/bazelbuild/buildtools/blob/master/WARNINGS.md#integer-division"
-                },
-                {
-                    "start": {
-                        "line": 3,
-                        "column": 15
-                    },
-                    "end": {
-                        "line": 3,
-                        "column": 27
-                    },
-                    "category": "attr-cfg",
-                    "actionable": true,
-                    "message": "cfg = \"data\" for attr definitions has no effect and should be removed.",
-                    "url": "https://github.com/bazelbuild/buildtools/blob/master/WARNINGS.md#attr-cfg"
-                }
-            ]
-        },
-        {
-            "filename": "to_fix_2.bzl",
-            "formatted": false,
-            "valid": true,
-            "warnings": []
-        },
-        {
-            "filename": "to_fix_3.bzl",
-            "formatted": false,
-            "valid": true,
-            "warnings": [],
-            "rewrites": {
-                "editoctal": 1
-            }
-        },
-        {
-            "filename": "to_fix_4.bzl",
-            "formatted": true,
-            "valid": true,
-            "warnings": []
-        }
-    ]
-}
+$buildozer 'copy visibility original' //funcalls:copy || [[ $? -eq 2 ]]
+assert_equal_files funcalls/BUILD funcalls/BUILD.expected
+
+# error out when original visibility is missing
+mkdir -p missing_original
+cat > missing_original/BUILD <<EOF
+filegroup(
+    name = "original",
+)
+
+filegroup(
+    name = "copy",
+    visibility = ["//yolo:a", "//bubu:baz"],
+)
 EOF
 
-cat > golden/json_report_small_golden <<EOF
-{
-    "success": true,
-    "files": [
-        {
-            "filename": "to_fix_4.bzl",
-            "formatted": true,
-            "valid": true,
-            "warnings": []
-        }
-    ]
-}
+cat > missing_original/BUILD.expected <<EOF
+filegroup(
+    name = "original",
+)
+
+filegroup(
+    name = "copy",
+    visibility = ["//yolo:a", "//bubu:baz"],
+)
 EOF
 
-cat > golden/json_report_stdin_golden <<EOF
-{
-    "success": true,
-    "files": [
-        {
-            "filename": "\u003cstdin\u003e",
-            "formatted": true,
-            "valid": true,
-            "warnings": []
-        }
-    ]
-}
+$buildozer 'copy visibility original' //missing_original:copy || [[ $? -eq 2 ]]
+assert_equal_files missing_original/BUILD missing_original/BUILD.expected
+
+# error out when copy visibility is missing
+mkdir -p missing_copy
+cat > missing_copy/BUILD <<EOF
+filegroup(
+    name = "original",
+    visibility = ["//yolo:a", "//bubu:baz"],
+)
+
+filegroup(
+    name = "copy",
+)
 EOF
 
-cat > golden/json_report_invalid_file_golden <<EOF
-{
-    "success": false,
-    "files": [
-        {
-            "filename": "to_fix_4.bzl",
-            "formatted": true,
-            "valid": true,
-            "warnings": []
-        },
-        {
-            "filename": "foo.bar",
-            "formatted": false,
-            "valid": false,
-            "warnings": []
-        }
-    ]
-}
+cat > missing_copy/BUILD.expected <<EOF
+filegroup(
+    name = "original",
+    visibility = ["//yolo:a", "//bubu:baz"],
+)
+
+filegroup(
+    name = "copy",
+)
 EOF
 
-cd test_dir/json
-
-$buildifier --mode=check --format=json --lint=warn --warnings=-module-docstring -v to_fix.bzl to_fix_2.bzl to_fix_3.bzl to_fix_4.bzl > json_report
-diff json_report ../../golden/json_report_golden || die "$1: wrong console output for --mode=check --format=json --lint=warn with many files"
-
-$buildifier --mode=check --format=json --lint=warn --warnings=-module-docstring -v to_fix_4.bzl > json_report
-diff json_report ../../golden/json_report_small_golden || die "$1: wrong console output for --mode=check --format=json --lint=warn with a single file"
-
-$buildifier --mode=check --format=json --lint=warn --warnings=-module-docstring -v < to_fix_4.bzl > json_report
-diff json_report ../../golden/json_report_stdin_golden || die "$1: wrong console output for --mode=check --format=json --lint=warn with stdin"
-
-$buildifier --mode=check --format=json --lint=warn --warnings=-module-docstring -v to_fix_4.bzl foo.bar > json_report
-diff json_report ../../golden/json_report_invalid_file_golden || die "$1: wrong console output for --mode=check --format=json --lint=warn with an invalid file"
+$buildozer 'copy visibility original' //missing_copy:copy || [[ $? -eq 2 ]]
+assert_equal_files missing_copy/BUILD missing_copy/BUILD.expected

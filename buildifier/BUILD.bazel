@@ -19,10 +19,12 @@ sh_test(
     args = [
         "$(location :buildifier)",
         "$(location //buildifier2)",
+        "$(location //buildozer)",
     ],
     data = [
         ":buildifier",
         "//buildifier2",
+        "//buildozer",
     ],
 )
 
