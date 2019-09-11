@@ -45,6 +45,8 @@ function assert_equal_files() {
     cat $2
     echo "## Diff:"
     diff $1 $2
+  else
+    echo "## PASSED $1"
   fi
 }
 
@@ -399,39 +401,11 @@ EOF
 $buildozer 'copy visibility original' //funcalls:copy || [[ $? -eq 2 ]]
 assert_equal_files funcalls/BUILD funcalls/BUILD.expected
 
-# error out when original visibility is missing
-mkdir -p missing_original
-cat > missing_original/BUILD <<EOF
+# original visibility missing, copy has private, original wins
+mkdir -p missing_original_private
+cat > missing_original_private/BUILD <<EOF
 filegroup(
     name = "original",
-)
-
-filegroup(
-    name = "copy",
-    visibility = ["//yolo:a", "//bubu:baz"],
-)
-EOF
-
-cat > missing_original/BUILD.expected <<EOF
-filegroup(
-    name = "original",
-)
-
-filegroup(
-    name = "copy",
-    visibility = ["//yolo:a", "//bubu:baz"],
-)
-EOF
-
-$buildozer 'copy visibility original' //missing_original:copy || [[ $? -eq 2 ]]
-assert_equal_files missing_original/BUILD missing_original/BUILD.expected
-
-# error out when copy visibility is missing
-mkdir -p missing_copy
-cat > missing_copy/BUILD <<EOF
-filegroup(
-    name = "original",
-    visibility = ["//yolo:a", "//bubu:baz"],
 )
 
 filegroup(
@@ -439,10 +413,9 @@ filegroup(
 )
 EOF
 
-cat > missing_copy/BUILD.expected <<EOF
+cat > missing_original_private/BUILD.expected <<EOF
 filegroup(
     name = "original",
-    visibility = ["//yolo:a", "//bubu:baz"],
 )
 
 filegroup(
@@ -450,5 +423,97 @@ filegroup(
 )
 EOF
 
-$buildozer 'copy visibility original' //missing_copy:copy || [[ $? -eq 2 ]]
-assert_equal_files missing_copy/BUILD missing_copy/BUILD.expected
+$buildozer 'copy visibility original' //missing_original_private:copy || [[ $? -eq 3 ]]
+assert_equal_files missing_original_private/BUILD missing_original_private/BUILD.expected
+
+# original missing, copy has public, copy wins
+mkdir -p missing_original_public
+cat > missing_original_public/BUILD <<EOF
+filegroup(
+    name = "original",
+)
+
+filegroup(
+    name = "copy",
+    visibility = ["//visibility:public"],
+)
+EOF
+
+cat > missing_original_public/BUILD.expected <<EOF
+filegroup(
+    name = "original",
+)
+
+filegroup(
+    name = "copy",
+    visibility = ["//visibility:public"],
+)
+EOF
+
+$buildozer 'copy visibility original' //missing_original_public:copy || [[ $? -eq 3 ]]
+assert_equal_files missing_original_public/BUILD missing_original_public/BUILD.expected
+
+# original missing, copy has whitelist, package is public, public wins
+mkdir -p missing_original_public_package
+cat > missing_original_public_package/BUILD <<EOF
+package(default_visibility = ["//visibility:public"])
+
+filegroup(
+    name = "original",
+)
+
+filegroup(
+    name = "copy",
+    visibility = ["//a:b"],
+)
+EOF
+
+cat > missing_original_public_package/BUILD.expected <<EOF
+package(default_visibility = ["//visibility:public"])
+
+filegroup(
+    name = "original",
+)
+
+filegroup(
+    name = "copy",
+    visibility = ["//visibility:public"],
+)
+EOF
+
+$buildozer 'copy visibility original' //missing_original_public_package:copy || [[ $? -eq 3 ]]
+assert_equal_files missing_original_public_package/BUILD missing_original_public_package/BUILD.expected
+
+# original missing, copy has whitelist, package is public, public wins
+mkdir -p why_oh_why
+cat > why_oh_why/BUILD <<EOF
+package(default_visibility = ["//c:d"])
+
+filegroup(
+    name = "original",
+)
+
+filegroup(
+    name = "copy",
+    visibility = ["//e:f"],
+)
+EOF
+
+cat > why_oh_why/BUILD.expected <<EOF
+package(default_visibility = ["//c:d"])
+
+filegroup(
+    name = "original",
+)
+
+filegroup(
+    name = "copy",
+    visibility = [
+        "//c:d",
+        "//e:f",
+    ],
+)
+EOF
+
+$buildozer 'copy visibility original' //why_oh_why:copy || [[ $? -eq 3 ]]
+assert_equal_files why_oh_why/BUILD why_oh_why/BUILD.expected

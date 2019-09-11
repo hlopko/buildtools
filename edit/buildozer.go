@@ -578,24 +578,48 @@ func copyAttributeBetweenRules(env CmdEnvironment, attrName string, from string)
 	if fromRule == nil {
 		return nil, fmt.Errorf("could not find rule '%s'", from)
 	}
-	attr := fromRule.Attr(attrName)
-	if attr == nil {
-		return nil, fmt.Errorf("rule '%s' does not have attribute '%s'", from, attrName)
-	}
 
-	ast, err := build.ParseBuild("" /* filename */, []byte(build.FormatString(attr)))
-	if err != nil {
-		return nil, fmt.Errorf("could not parse attribute value %v", build.FormatString(attr))
-	}
-  fmt.Fprintf(os.Stderr, "Magic happens, watch out\n")
+  var fromVal build.Expr
+  var toVal build.Expr
 
-	attr = env.Rule.Attr(attrName)
-	if attr == nil {
-		return nil, fmt.Errorf("rule does not have attribute '%s'", attrName)
-	}
+	if fromRule.Attr(attrName) != nil {
+    // we have attribute on from rule
+    attr := fromRule.Attr(attrName)
+    ast, err := build.ParseBuild("" /* filename */, []byte(build.FormatString(attr)))
+    if err != nil {
+      return nil, fmt.Errorf("could not parse attribute value %v", build.FormatString(attr))
+    }
+    fromVal = ast.Stmt[0]
+  } else {
+    pkgDecl := PackageDeclaration(env.File)
+    defaultVisibility := pkgDecl.AttrStrings("default_visibility")
+    // If no default_visibility is given, it is implicitly private.
+    if len(defaultVisibility) == 0 {
+      defaultVisibility = []string{"//visibility:private"}
+    }
+    list := &build.ListExpr{}
+    for _, v := range defaultVisibility {
+      list.List = append(list.List, &build.StringExpr{Value: v})
+    }
+    fromVal = list
+  }
 
-  fromVal := ast.Stmt[0]
-  toVal := env.Rule.Attr(attrName)
+	if env.Rule.Attr(attrName) != nil {
+    toVal = env.Rule.Attr(attrName)
+	} else {
+    pkgDecl := PackageDeclaration(env.File)
+    defaultVisibility := pkgDecl.AttrStrings("default_visibility")
+    // If no default_visibility is given, it is implicitly private.
+    if len(defaultVisibility) == 0 {
+      defaultVisibility = []string{"//visibility:private"}
+    }
+    list := &build.ListExpr{}
+    for _, v := range defaultVisibility {
+      list.List = append(list.List, &build.StringExpr{Value: v})
+    }
+    toVal = list
+  }
+
   idents := make (map[string]bool)
   extraIdents := make (map[string]bool)
   seen := make (map[string]bool)
@@ -662,7 +686,6 @@ func copyAttributeBetweenRules(env CmdEnvironment, attrName string, from string)
     }
   }
 
-  fmt.Fprintf(os.Stderr, "Magic happens, watch out\n")
   if lastListExpr != nil {
     lastListExpr.List = append(lastListExpr.List, extraExprs...)
   } else {
