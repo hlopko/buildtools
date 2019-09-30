@@ -44,7 +44,7 @@ function assert_equal_files() {
     echo "## Second:"
     cat $2
     echo "## Diff:"
-    diff $1 $2
+    diff -u $1 $2
   else
     echo "## PASSED $1"
   fi
@@ -517,3 +517,22 @@ EOF
 
 $buildozer 'copy visibility original' //why_oh_why:copy || [[ $? -eq 3 ]]
 assert_equal_files why_oh_why/BUILD why_oh_why/BUILD.expected
+
+# Both empty, package not empty
+mkdir -p do_nothing_on_only_package_set
+cat > do_nothing_on_only_package_set/BUILD <<EOF
+package(default_visibility = ["//c:d"])
+
+filegroup(
+    name = "original",
+)
+
+filegroup(
+    name = "copy",
+)
+EOF
+
+cp do_nothing_on_only_package_set/BUILD do_nothing_on_only_package_set/BUILD.expected
+
+$buildozer 'copy visibility original' //do_nothing_on_only_package_set:copy || [[ $? -eq 3 ]]
+assert_equal_files do_nothing_on_only_package_set/BUILD do_nothing_on_only_package_set/BUILD.expected

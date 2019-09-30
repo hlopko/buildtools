@@ -582,6 +582,10 @@ func copyAttributeBetweenRules(env CmdEnvironment, attrName string, from string)
   var fromVal build.Expr
   var toVal build.Expr
 
+	if env.Rule.Attr(attrName) == nil && fromRule.Attr(attrName) == nil {
+    return env.File, nil
+  }
+
 	if fromRule.Attr(attrName) != nil {
     // we have attribute on from rule
     attr := fromRule.Attr(attrName)
